@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environments and local configuration
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# IDE and operating-system files
+.DS_Store
+.idea/
+.vscode/
+
+# Generated disclosures, workbooks, and debug artifacts
+outputs/
+debug/
+*.pdf
+*.xlsx
+~$*

@@ -74,7 +74,6 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", str(s or "").strip())
 
 
-# --- PATCH: collapse spaced-out glyph extraction artifacts ---
 def _compact_spaced_text(s: str) -> str:
     """Collapse spaced-out glyph extraction artifacts.
 
@@ -367,7 +366,6 @@ def parse_pct_token(s: str) -> Optional[float]:
     return float(f"{m.group(1)}.{m.group(2)}")
 
 
-# --- PATCH: robust numeric-tail extractor ---
 # Note: order matters. Match percent-like tokens first so "41.10" is not split into "41" and "10".
 NUM_TOKEN_RE = re.compile(r"(?<!\w)(\d{1,3}\.\d{2}|-?\d{1,3}(?:,\d{3})+|-?\d+)(?!\w)")
 
@@ -386,9 +384,9 @@ def extract_numeric_tail(all_txt: str) -> Dict[str, Any]:
         return out
 
     tail = toks[-7:] if len(toks) >= 7 else toks[-6:]
-    # If only 6, we treat delta as missing.
+    # Six values represent the complete before/after block without a delta.
     if len(tail) == 6:
-        tail = [""] + tail  # pad at front for shares_before
+        tail.append("")
 
     # Map: shares_before, combined_before, pct_before, shares_after, combined_after, pct_after, delta
     sb, cb, pb, sa, ca, pa, d = tail
@@ -718,6 +716,37 @@ def build_argparser() -> argparse.ArgumentParser:
     return p
 
 
+def resolve_page_window(
+    total_pages: int,
+    table_page_idx: int,
+    page_from: int = 0,
+    page_to: int = 0,
+    max_pages: int = 0,
+) -> Tuple[int, int]:
+    """Resolve CLI page options to a zero-based, half-open page window."""
+    if total_pages <= 0:
+        raise ValueError("PDF must contain at least one page")
+    if not 0 <= table_page_idx < total_pages:
+        raise ValueError("table page index is outside the PDF")
+
+    automatic_start_page = table_page_idx + 1
+    start_page = page_from if page_from > 0 else automatic_start_page
+    if not 1 <= start_page <= total_pages:
+        raise ValueError("start page is outside the PDF")
+
+    if page_to > 0:
+        end_page = min(page_to, total_pages)
+    elif max_pages > 0:
+        end_page = min(start_page + max_pages - 1, total_pages)
+    else:
+        end_page = total_pages
+
+    if end_page < start_page:
+        raise ValueError("end page must not come before start page")
+
+    return start_page - 1, end_page
+
+
 def main() -> None:
     args = build_argparser().parse_args()
     pdf_path = Path(args.pdf)
@@ -746,18 +775,17 @@ def main() -> None:
         for name, x0 in bands.cuts:
             print(f"  {name:16s} x0={x0:.1f}")
 
-        # Determine processing window
-        max_pages = args.max_pages if args.max_pages and args.max_pages > 0 else len(pdf.pages)
-        auto_start = table_page_idx + 1
-        start_page = args.page_from if args.page_from and args.page_from > 0 else auto_start
-        end_page = args.page_to if args.page_to and args.page_to > 0 else min(len(pdf.pages), max_pages)
-
-        start_idx = max(0, start_page - 1)
-        end_idx_excl = min(len(pdf.pages), end_page)
+        start_idx, end_idx_excl = resolve_page_window(
+            total_pages=len(pdf.pages),
+            table_page_idx=table_page_idx,
+            page_from=args.page_from,
+            page_to=args.page_to,
+            max_pages=args.max_pages,
+        )
 
         for pidx in range(start_idx, end_idx_excl):
             if (pidx - table_page_idx) % 5 == 0:
-                print(f"[progress] processing page {pidx+1}/{end_page}")
+                print(f"[progress] processing page {pidx+1}/{end_idx_excl}")
             page = pdf.pages[pidx]
             raw_dbg, parsed = extract_table_from_page(
                 page,
