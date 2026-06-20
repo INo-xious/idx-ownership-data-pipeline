@@ -10,7 +10,6 @@ import streamlit as st
 ROOT = Path(__file__).parent
 
 SCRAPE_SCRIPT = ROOT / "scrape_and_download.py"
-# Robust extractor for the black multi-column ownership table
 EXTRACT_SCRIPT = ROOT / "extract_ownership_table.py"
 
 PDF_DIR = ROOT / "outputs" / "pdfs"
@@ -68,7 +67,7 @@ def open_folder_in_os(folder: Path) -> None:
         else:
             subprocess.Popen(["xdg-open", str(folder)])
     except Exception:
-        # Streamlit runs in different environments; opening may fail.
+        # Folder opening is optional and may be unavailable on a remote host.
         pass
 
 
@@ -116,7 +115,6 @@ def cleanup():
     PDF_DIR.mkdir(parents=True, exist_ok=True)
     EXTRACTED_DIR.mkdir(parents=True, exist_ok=True)
 
-    # clear pdfs
     if PDF_DIR.exists():
         for f in PDF_DIR.glob("*"):
             try:
@@ -127,7 +125,7 @@ def cleanup():
             except Exception:
                 pass
 
-    # clear extracted except master
+    # Preserve the merged workbook while removing per-document outputs.
     if EXTRACTED_DIR.exists():
         for f in EXTRACTED_DIR.glob("*.xlsx"):
             if f.name != FINAL_FILE.name:
@@ -157,7 +155,6 @@ if run_clicked:
         EXTRACTED_DIR.mkdir(parents=True, exist_ok=True)
         PDF_DIR.mkdir(parents=True, exist_ok=True)
 
-        # 1) Scrape + download PDFs
         scrape_args = [
             "--keyword",
             str(keyword),
@@ -168,7 +165,6 @@ if run_clicked:
             scrape_args += ["--max-pdfs", str(int(max_pdfs))]
         run_script(SCRAPE_SCRIPT, scrape_args)
 
-        # 2) Batch extract all PDFs
         pdfs = sorted(PDF_DIR.glob("*.pdf"))
         if not pdfs:
             raise RuntimeError(f"No PDFs found in {PDF_DIR}")
@@ -197,7 +193,6 @@ if run_clicked:
 
         st.write(f"✅ Extracted: {ok_count} | ❌ Failed: {fail_count}")
 
-        # 3) Merge
         if do_merge:
             st.write("### 🧩 Merging all ownership tables...")
             file_count, row_count = merge_excels(per_pdf_outputs, FINAL_FILE)
@@ -205,15 +200,12 @@ if run_clicked:
         else:
             st.info("Merge disabled — per-PDF Excel files are kept in outputs/extracted")
 
-        # 4) Cleanup
         if do_cleanup:
             cleanup()
 
-        # 5) Auto-open folder
         if do_open_folder:
             open_folder_in_os(EXTRACTED_DIR)
 
-        # Download buttons
         if FINAL_FILE.exists():
             st.success("🎉 DONE!")
             with open(FINAL_FILE, "rb") as f:
