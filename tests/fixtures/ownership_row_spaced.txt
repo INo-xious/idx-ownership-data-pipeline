@@ -1,0 +1,1 @@
+002 MOCK PT CONTOH AMAN INDONESIA L before_shares 2 0 0 , 0 0 0 before_combined 3 0 0 , 0 0 0 before_pct 2 0 . 0 0 after_shares 2 5 0 , 0 0 0 after_combined 3 5 0 , 0 0 0 after_pct 2 5 . 0 0 delta 5 0 , 0 0 0
