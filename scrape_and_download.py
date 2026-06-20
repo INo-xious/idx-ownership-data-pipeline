@@ -60,11 +60,7 @@ def build_argparser() -> argparse.ArgumentParser:
 
 
 def run_extractor(pdf_path: Path, out_xlsx: Path, debug_root: str = "") -> None:
-    """Call the robust ownership extractor as a subprocess.
-
-    We intentionally use subprocess to avoid import/path issues when users run from
-    different working directories.
-    """
+    """Run the ownership extractor in an isolated Python process."""
     cmd = [
         sys.executable,
         str(Path(__file__).with_name("extract_ownership_table.py")),
@@ -76,13 +72,12 @@ def run_extractor(pdf_path: Path, out_xlsx: Path, debug_root: str = "") -> None:
     if debug_root:
         debug_dir = Path(debug_root) / pdf_path.stem
         cmd += ["--debug-dir", str(debug_dir)]
-    # Show extractor output live
     subprocess.run(cmd, check=True)
 
 PDF_RE = re.compile(r"\.pdf(\?|$)", re.IGNORECASE)
 
 def safe_filename(url: str, preferred_name: str | None = None) -> str:
-    # Prefer the visible link text (usually the real filename)
+    # IDX link text usually preserves the original attachment name.
     name = (preferred_name or "").strip()
 
     if not name:
@@ -92,19 +87,17 @@ def safe_filename(url: str, preferred_name: str | None = None) -> str:
     if not name.lower().endswith(".pdf"):
         name += ".pdf"
 
-    # sanitize
     name = re.sub(r"[^\w\-. ()]", "_", name)[:180]
     return name
 
 def looks_like_pdf(data: bytes) -> bool:
-    # Real PDFs start with '%PDF' header
     if not data or len(data) < 1024:
         return False
     return data[:4] == b"%PDF"
 
 async def main(args: argparse.Namespace):
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)  # ubah False kalau mau lihat
+        browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -115,14 +108,12 @@ async def main(args: argparse.Namespace):
         page = await context.new_page()
         await page.goto(IDX_URL, wait_until="networkidle")
 
-        # Pastikan fokus di halaman yang benar
-        # (Kalau tab/section berubah, ini aman)
+        # Some IDX layouts require selecting the disclosure tab explicitly.
         ki_tab = await page.query_selector('a:has-text("Keterbukaan Informasi")')
         if ki_tab:
             await ki_tab.click()
             await page.wait_for_timeout(1000)
 
-        # Input "Kata kunci..." sesuai screenshot kamu
         search_box = await page.query_selector('input[placeholder*="Kata kunci" i]')
         if not search_box:
             raise RuntimeError('Input "Kata kunci..." tidak ditemukan. Cek selector halaman IDX.')
@@ -141,30 +132,24 @@ async def main(args: argparse.Namespace):
                 if not href:
                     continue
 
-                # Robust visible text extraction + normalize whitespace
                 txt = (await a.text_content()) or ""
                 txt = re.sub(r"\s+", " ", txt).strip()
                 txt_l = txt.lower()
 
-                # Must look like a filename (ends with .pdf)
                 if not txt_l.endswith(".pdf"):
                     continue
 
-                # Must look like IDX attachment filename, e.g. starts with YYYYMMDD_...
-                # Some useful files may not contain 'lamp', so we accept either:
-                # - an 8-digit date prefix anywhere, OR
-                # - '_lamp' token
+                # Attachment names typically contain a date or the Indonesian
+                # abbreviation for an attachment ("lamp").
                 looks_like_idx_filename = bool(re.search(r"\b20\d{6}\b", txt)) or ("_lamp" in txt_l)
                 if not looks_like_idx_filename:
                     continue
 
                 full = urllib.parse.urljoin(page.url, href)
                 if PDF_RE.search(full):
-                    # keep the first seen preferred filename for this URL
                     pdf_links.setdefault(full, txt)
 
-        # Pagination loop yang lebih aman:
-        # cari tombol Next/Berikutnya, stop kalau disabled / tidak ada
+        # Support both English and Indonesian pagination controls.
         while True:
             await collect_pdf_links()
 
@@ -199,7 +184,8 @@ async def main(args: argparse.Namespace):
 
         print(f"Found {len(pdf_links)} PDF links")
 
-        # Build requests session with cookies from Playwright (mengurangi 403)
+        # Reuse browser cookies because direct attachment requests may otherwise
+        # be rejected by IDX.
         cookies = await context.cookies()
         jar = requests.cookies.RequestsCookieJar()
         for c in cookies:
@@ -213,7 +199,6 @@ async def main(args: argparse.Namespace):
         out_dir.mkdir(parents=True, exist_ok=True)
 
         downloaded: list[Path] = []
-        # Download PDFs
         for idx, (url, preferred_name) in enumerate(
             tqdm(sorted(pdf_links.items()), desc="Downloading PDFs")
         ):
@@ -229,14 +214,14 @@ async def main(args: argparse.Namespace):
                 downloaded.append(out_path)
                 continue
 
-            # polite delay (optional)
+            # Avoid sending attachment requests in a tight loop.
             time.sleep(0.2)
 
             r = sess.get(url, timeout=90)
             r.raise_for_status()
             data = r.content
 
-            # Skip links that are not real PDFs (some IDX links return HTML/empty)
+            # IDX may return an HTML error page for an attachment URL.
             if not looks_like_pdf(data):
                 print(f"[SKIP] Not a real PDF (or too small): {url}")
                 continue
@@ -247,7 +232,6 @@ async def main(args: argparse.Namespace):
         await browser.close()
         print(f"Done. PDFs saved to: {out_dir.resolve()}")
 
-        # Optional extraction stage
         if args.extract and downloaded:
             extract_out_dir = Path(args.extract_out_dir)
             extract_out_dir.mkdir(parents=True, exist_ok=True)
@@ -260,7 +244,7 @@ async def main(args: argparse.Namespace):
                 try:
                     run_extractor(pdf_path, out_xlsx, debug_root=args.extract_debug_dir)
                 except subprocess.CalledProcessError as e:
-                    # Don't stop the entire pipeline if one PDF is malformed.
+                    # One malformed disclosure should not abort the batch.
                     print(f"[extract][ERROR] {pdf_path.name}: {e}")
 
 if __name__ == "__main__":
