@@ -74,6 +74,14 @@ idx-ownership-data-pipeline/
 ├── extract_ownership_table.py
 ├── run_gui.py
 ├── requirements.txt
+├── requirements-dev.txt
+├── examples/
+│   └── sample_ownership_output.xlsx
+├── tests/
+│   ├── fixtures/
+│   │   ├── ownership_row_spaced.txt
+│   │   └── ownership_row_standard.txt
+│   └── test_text_parsing.py
 ├── README.md
 │
 └── outputs/
@@ -89,6 +97,9 @@ idx-ownership-data-pipeline/
 | `extract_ownership_table.py` | Extracts KSEI/BEI ownership records from a PDF into a clean Excel file. |
 | `run_gui.py` | Streamlit interface for running scrape, extraction, merge, cleanup, and download steps. |
 | `requirements.txt` | Python package dependencies. |
+| `requirements-dev.txt` | Runtime dependencies plus pytest. |
+| `tests/` | Focused tests and sanitized parser fixtures. |
+| `examples/sample_ownership_output.xlsx` | Fictional sample of the generated workbook schema. |
 | `outputs/pdfs/` | Default folder for downloaded PDFs. |
 | `outputs/extracted/` | Default folder for extracted Excel outputs. |
 
@@ -313,6 +324,20 @@ Then check the output folder:
 outputs/extracted/
 ```
 
+## Tests and Sanitized Samples
+
+Install the development dependencies and run the parser tests:
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+```
+
+The fixtures in `tests/fixtures/` contain fictional, sanitized ownership rows.
+They cover both normal text extraction and glyph-by-glyph PDF text without
+publishing real shareholder information. A representative workbook is available
+at `examples/sample_ownership_output.xlsx`.
+
 ## Suggested `requirements.txt`
 
 The GUI uses Streamlit, so the dependency list should include it.
@@ -338,7 +363,7 @@ streamlit>=1.30.0
 
 ## Future Improvements
 
-- Add automated tests with sample PDFs
+- Expand tests with additional sanitized table layouts
 - Add configuration file support
 - Add better error summaries after batch extraction
 - Add duplicate detection for downloaded PDFs
