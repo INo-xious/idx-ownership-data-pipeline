@@ -8,7 +8,6 @@ one ownership record per Excel row and can emit word-level debug data.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 from dataclasses import dataclass
@@ -25,14 +24,6 @@ INT_THOUSANDS_RE = re.compile(r"\d{1,3}(?:,\d{3})+")
 # Values may be comma-grouped or plain integers.
 INT_ANY_RE = re.compile(r"(?<!\d)(\d{1,3}(?:,\d{3})+|\d+)(?!\d)")
 PCT_RE = re.compile(r"(?<!\d)(\d{1,3})\.(\d{2})(?!\d)")
-REPORT_DATE_RE = re.compile(
-    r"per\s+(?:tanggal\s+)?(\d{1,2})[-\s]+([A-Za-z]{3,12})[-\s]+(\d{4})",
-    re.IGNORECASE,
-)
-GENERIC_DATE_RE = re.compile(r"(\d{1,2})[-\s]+([A-Za-z]{3,12})[-\s]+(\d{4})", re.IGNORECASE)
-TABLE_DATE_RE = re.compile(r"(\d{1,2})-([A-Za-z]{3})-(\d{4})", re.IGNORECASE)
-FILENAME_DATE_RE = re.compile(r"^(20\d{2})(\d{2})(\d{2})_")
-BLUE_RGB = (0.0, 0.0, 1.0)
 
 COUNTRY_HINTS = {
     "INDONESIA",
@@ -59,220 +50,10 @@ COUNTRY_HINTS = {
     "LUXEMBOURG",
 }
 
-MONTHS = {
-    "jan": 1,
-    "january": 1,
-    "januari": 1,
-    "feb": 2,
-    "february": 2,
-    "februari": 2,
-    "mar": 3,
-    "march": 3,
-    "maret": 3,
-    "apr": 4,
-    "april": 4,
-    "may": 5,
-    "mei": 5,
-    "jun": 6,
-    "june": 6,
-    "juni": 6,
-    "jul": 7,
-    "july": 7,
-    "juli": 7,
-    "aug": 8,
-    "august": 8,
-    "agustus": 8,
-    "sep": 9,
-    "sept": 9,
-    "september": 9,
-    "oct": 10,
-    "october": 10,
-    "okt": 10,
-    "oktober": 10,
-    "nov": 11,
-    "november": 11,
-    "dec": 12,
-    "december": 12,
-    "des": 12,
-    "desember": 12,
-}
-
 
 
 def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", str(s or "").strip())
-
-
-def parse_pdf_date_token(value: str) -> str:
-    """Parse KSEI date tokens such as 05-JUN-2026 or 5 Jun 2026."""
-    value = _norm(value)
-    m = TABLE_DATE_RE.search(value) or REPORT_DATE_RE.search(value) or GENERIC_DATE_RE.search(value)
-    if not m:
-        return ""
-    day, month_name, year = m.groups()
-    month = MONTHS.get(month_name.lower())
-    if not month:
-        return ""
-    try:
-        return f"{int(year):04d}-{month:02d}-{int(day):02d}"
-    except ValueError:
-        return ""
-
-
-def extract_report_dates_from_text(text: str) -> Dict[str, str]:
-    """Extract report/as-of dates from the PDF cover and table header text."""
-    text = _compact_spaced_text(text or "")
-    report_date = ""
-    m = REPORT_DATE_RE.search(text)
-    if m:
-        report_date = parse_pdf_date_token(" ".join(m.groups()))
-
-    table_dates = [parse_pdf_date_token("-".join(m.groups())) for m in TABLE_DATE_RE.finditer(text)]
-    table_dates = [x for x in table_dates if x]
-
-    previous_report_date = ""
-    if table_dates:
-        if report_date and report_date in table_dates:
-            idx = table_dates.index(report_date)
-            if idx > 0:
-                previous_report_date = table_dates[idx - 1]
-        if not previous_report_date and len(table_dates) >= 2:
-            previous_report_date = table_dates[-2]
-        if not report_date:
-            report_date = table_dates[-1]
-
-    return {
-        "report_date": report_date,
-        "previous_report_date": previous_report_date,
-    }
-
-
-def filename_date(filename: str) -> str:
-    m = FILENAME_DATE_RE.search(Path(filename).name)
-    if not m:
-        return ""
-    y, month, day = m.groups()
-    try:
-        return f"{int(y):04d}-{int(month):02d}-{int(day):02d}"
-    except ValueError:
-        return ""
-
-
-def _color_tuple(value: Any) -> Tuple[float, ...]:
-    if value is None:
-        return tuple()
-    if isinstance(value, (int, float)):
-        return (float(value),)
-    try:
-        return tuple(float(x) for x in value)
-    except TypeError:
-        return tuple()
-
-
-def is_blue_font_color(value: Any) -> bool:
-    color = _color_tuple(value)
-    if len(color) < 3:
-        return False
-    red, green, blue = color[:3]
-    return red <= 0.25 and green <= 0.35 and blue >= 0.75
-
-
-def word_is_highlighted(word: Dict[str, Any]) -> bool:
-    return is_blue_font_color(word.get("non_stroking_color"))
-
-
-def highlighted_text(words: List[Dict[str, Any]]) -> str:
-    return join_bucket([w for w in words if word_is_highlighted(w)])
-
-
-def highlighted_columns(buckets: Dict[str, List[Dict[str, Any]]]) -> str:
-    names = [name for name, words in buckets.items() if any(word_is_highlighted(w) for w in words)]
-    return ",".join(names)
-
-
-def merge_csv_values(left: str, right: str) -> str:
-    values: list[str] = []
-    seen: set[str] = set()
-    for part in (left or "", right or ""):
-        for value in str(part).split(","):
-            value = value.strip()
-            if value and value not in seen:
-                seen.add(value)
-                values.append(value)
-    return ",".join(values)
-
-
-def parse_delta_token(value: str) -> Optional[int]:
-    value = _compact_spaced_text(value or "").strip()
-    if not value or value == "-":
-        return None
-    m = re.search(r"-?\d{1,3}(?:,\d{3})+|-?\d+", value)
-    if not m:
-        return None
-    return int(m.group(0).replace(",", ""))
-
-
-def compute_change_fields(record: Dict[str, Any]) -> Dict[str, Any]:
-    shares_before = record.get("shares_before")
-    shares_after = record.get("shares_after")
-    pct_before = record.get("pct_before")
-    pct_after = record.get("pct_after")
-    warnings = str(record.get("parse_warnings") or "")
-    clean_numeric_parse = "missing_pct" not in warnings and "out_of_range" not in warnings
-
-    delta_from_field = parse_delta_token(str(record.get("delta_shares_or_delta_field") or ""))
-    delta_shares = None
-    if delta_from_field is not None:
-        delta_shares = delta_from_field
-    elif clean_numeric_parse and shares_before is not None and shares_after is not None:
-        delta_shares = int(shares_after) - int(shares_before)
-
-    delta_pct = None
-    if pct_before is not None and pct_after is not None:
-        delta_pct = round(float(pct_after) - float(pct_before), 4)
-
-    highlighted = bool(record.get("is_highlighted_change"))
-    has_reliable_delta = highlighted or clean_numeric_parse
-    has_numeric_change = bool(
-        has_reliable_delta
-        and (
-            (delta_shares is not None and delta_shares != 0)
-            or (delta_pct is not None and abs(delta_pct) > 1e-9)
-        )
-    )
-
-    record["delta_shares"] = delta_shares
-    record["delta_pct"] = delta_pct
-    record["has_numeric_change"] = has_numeric_change
-    record["change_reason"] = ",".join(
-        reason
-        for reason, active in (
-            ("blue_text", highlighted),
-            ("numeric_delta", has_numeric_change),
-        )
-        if active
-    )
-    return record
-
-
-def load_manifest_metadata(manifest_path: str | Path | None, pdf_path: Path) -> Dict[str, Any]:
-    if not manifest_path:
-        return {}
-    path = Path(manifest_path)
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-
-    pdf_name = pdf_path.name
-    for row in data if isinstance(data, list) else []:
-        local_name = Path(str(row.get("local_pdf_path") or "")).name
-        attachment_name = str(row.get("attachment_filename") or "")
-        if pdf_name in {local_name, attachment_name}:
-            return dict(row)
-    return {}
 
 
 def _compact_spaced_text(s: str) -> str:
@@ -649,21 +430,15 @@ def extract_table_from_page(
     bands: ColumnBands,
     page_no: int,
     source_file: str,
-    document_info: Optional[Dict[str, Any]] = None,
     debug_words_dir: Optional[Path] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Return (raw_row_debug, parsed_records) for a page."""
-    document_info = document_info or {}
     # Exclude page margins and footers before positional extraction.
     crop_bbox = (15, 55, page.width - 15, page.height - 18)
     cropped = page.crop(crop_bbox)
 
     # Positional bucketing does not require pdfplumber's text-flow inference.
-    words = cropped.extract_words(
-        use_text_flow=False,
-        keep_blank_chars=False,
-        extra_attrs=["non_stroking_color"],
-    )
+    words = cropped.extract_words(use_text_flow=False, keep_blank_chars=False)
     words = dedupe_words(words)
 
     data_words = words
@@ -685,8 +460,6 @@ def extract_table_from_page(
                 "x1": w.get("x1"),
                 "top": w.get("top"),
                 "bottom": w.get("bottom"),
-                "non_stroking_color": w.get("non_stroking_color"),
-                "is_blue": word_is_highlighted(w),
             }
             for w in data_words
         ])
@@ -709,18 +482,12 @@ def extract_table_from_page(
 
         all_txt = join_bucket(row_words)
         all_txt = _compact_spaced_text(all_txt)
-        row_highlighted_columns = highlighted_columns(buckets)
-        row_highlighted_text = highlighted_text(row_words)
         raw_rows_debug.append(
             {
-                "source_pdf": source_file,
                 "source_file": source_file,
                 "page": page_no,
                 "row_index": ridx,
                 "raw_text": all_txt,
-                "is_highlighted_change": bool(row_highlighted_columns),
-                "highlighted_columns": row_highlighted_columns,
-                "highlighted_text": row_highlighted_text,
                 **{f"col_{k}": bucket_text.get(k, "") for k, _ in bands.cuts},
             }
         )
@@ -754,19 +521,6 @@ def extract_table_from_page(
                     current["address"] = _norm(cont)
                 current["raw_text"] = _norm(current.get("raw_text", "") + " | " + all_txt)
                 current["parse_warnings"] = _norm((current.get("parse_warnings", "") + " continuation").strip())
-                if row_highlighted_columns:
-                    current["is_highlighted_change"] = True
-                    current["highlighted_columns"] = merge_csv_values(
-                        current.get("highlighted_columns", ""),
-                        row_highlighted_columns,
-                    )
-                    current["highlighted_text"] = _norm(
-                        " | ".join(
-                            x
-                            for x in [current.get("highlighted_text", ""), row_highlighted_text]
-                            if x
-                        )
-                    )
             continue
 
         is_new = looks_like_new_record(bucket_text)
@@ -848,13 +602,7 @@ def extract_table_from_page(
         confidence = max(0.0, min(1.0, confidence))
 
         current = {
-            "source_pdf": source_file,
             "source_file": source_file,
-            "disclosure_datetime": document_info.get("disclosure_datetime", ""),
-            "announcement_date": document_info.get("announcement_date", ""),
-            "report_date": document_info.get("report_date", ""),
-            "previous_report_date": document_info.get("previous_report_date", ""),
-            "attachment_url": document_info.get("attachment_url", ""),
             "page": page_no,
             "row_no": row_no_val,
             "ticker": t,
@@ -874,9 +622,6 @@ def extract_table_from_page(
             "combined_before": combined_before,
             "pct_before": pct_before,
             "delta_shares_or_delta_field": _norm(bucket_text.get("delta", "")),
-            "is_highlighted_change": bool(row_highlighted_columns),
-            "highlighted_columns": row_highlighted_columns,
-            "highlighted_text": row_highlighted_text,
             "raw_text": all_txt,
             "parse_warnings": ";".join(warnings),
             "confidence": confidence,
@@ -897,7 +642,6 @@ def extract_table_from_page(
         addr = r.get("address", "")
         addr2 = r.pop("address2", "")
         r["address"] = _norm(" ".join([a for a in [addr, addr2] if a]).strip())
-        compute_change_fields(r)
 
     return raw_rows_debug, parsed
 
@@ -906,7 +650,6 @@ def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Extract KSEI/BEI ownership table into a clean Excel")
     p.add_argument("--pdf", required=True, help="Path to PDF")
     p.add_argument("--out", default="outputs/extracted/ownership_table.xlsx", help="Output Excel path")
-    p.add_argument("--manifest", default="", help="Optional scraper manifest JSON for disclosure metadata")
     p.add_argument("--debug-dir", default="", help="If set, write debug artifacts to this folder")
     p.add_argument(
         "--include-raw-debug",
@@ -919,48 +662,26 @@ def build_argparser() -> argparse.ArgumentParser:
     return p
 
 
-def _empty_frames() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+def main() -> None:
+    args = build_argparser().parse_args()
+    pdf_path = Path(args.pdf)
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    debug_dir = Path(args.debug_dir) if args.debug_dir else None
 
-
-def extract_pdf_to_frames(
-    pdf_path: Path,
-    manifest_path: str | Path | None = None,
-    debug_dir: Path | None = None,
-    include_raw_debug: bool = False,
-    max_pages: int = 0,
-    page_from: int = 0,
-    page_to: int = 0,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     raw_debug_all: List[Dict[str, Any]] = []
     rows_all: List[Dict[str, Any]] = []
-    manifest_meta = load_manifest_metadata(manifest_path, pdf_path)
 
     with pdfplumber.open(str(pdf_path)) as pdf:
         # Front matter varies, so locate the first page containing the table header.
         table_page_idx = None
-        first_pages_text: list[str] = []
         for i, p in enumerate(pdf.pages):
             t = (p.extract_text() or "")
-            if i < 3:
-                first_pages_text.append(t)
             if "NoKode" in t or "NoKode Efek" in t:
                 table_page_idx = i
                 break
         if table_page_idx is None:
             raise RuntimeError("Could not locate table header in PDF")
-
-        header_text = (pdf.pages[table_page_idx].extract_text() or "")
-        document_dates = extract_report_dates_from_text("\n".join(first_pages_text + [header_text]))
-        document_info = {
-            "source_pdf": pdf_path.name,
-            "disclosure_datetime": manifest_meta.get("disclosure_datetime", ""),
-            "announcement_date": manifest_meta.get("announcement_date", ""),
-            "attachment_url": manifest_meta.get("attachment_url", ""),
-            **document_dates,
-        }
-        if not document_info["announcement_date"]:
-            document_info["announcement_date"] = manifest_meta.get("filename_date", "") or filename_date(pdf_path.name)
 
         bands = infer_bands_from_header(pdf.pages[table_page_idx])
 
@@ -968,10 +689,10 @@ def extract_pdf_to_frames(
         for name, x0 in bands.cuts:
             print(f"  {name:16s} x0={x0:.1f}")
 
-        max_pages = max_pages if max_pages and max_pages > 0 else len(pdf.pages)
+        max_pages = args.max_pages if args.max_pages and args.max_pages > 0 else len(pdf.pages)
         auto_start = table_page_idx + 1
-        start_page = page_from if page_from and page_from > 0 else auto_start
-        end_page = page_to if page_to and page_to > 0 else min(len(pdf.pages), max_pages)
+        start_page = args.page_from if args.page_from and args.page_from > 0 else auto_start
+        end_page = args.page_to if args.page_to and args.page_to > 0 else min(len(pdf.pages), max_pages)
 
         start_idx = max(0, start_page - 1)
         end_idx_excl = min(len(pdf.pages), end_page)
@@ -985,10 +706,9 @@ def extract_pdf_to_frames(
                 bands=bands,
                 page_no=pidx + 1,
                 source_file=str(pdf_path.name),
-                document_info=document_info,
                 debug_words_dir=(debug_dir / "words") if debug_dir else None,
             )
-            if include_raw_debug:
+            if args.include_raw_debug:
                 raw_debug_all.extend(raw_dbg)
             rows_all.extend(parsed)
 
@@ -997,13 +717,7 @@ def extract_pdf_to_frames(
     df = pd.DataFrame(rows_all)
     # Keep a stable output schema even when no records provide an optional field.
     wanted = [
-        "source_pdf",
         "source_file",
-        "disclosure_datetime",
-        "announcement_date",
-        "report_date",
-        "previous_report_date",
-        "attachment_url",
         "page",
         "row_no",
         "ticker",
@@ -1022,118 +736,31 @@ def extract_pdf_to_frames(
         "combined_before",
         "pct_before",
         "delta_shares_or_delta_field",
-        "delta_shares",
-        "delta_pct",
-        "is_highlighted_change",
-        "has_numeric_change",
-        "change_reason",
-        "highlighted_columns",
-        "highlighted_text",
         "raw_text",
         "parse_warnings",
         "confidence",
     ]
     for c in wanted:
         if c not in df.columns:
-            df[c] = "" if c in {
-                "source_pdf",
-                "source_file",
-                "disclosure_datetime",
-                "announcement_date",
-                "report_date",
-                "previous_report_date",
-                "attachment_url",
-                "raw_text",
-                "parse_warnings",
-                "highlighted_columns",
-                "highlighted_text",
-                "change_reason",
-            } else None
+            df[c] = "" if c in {"raw_text", "parse_warnings"} else None
     df = df[wanted]
 
-    for col in ["page", "shares_after", "combined_after", "shares_before", "combined_before", "delta_shares"]:
+    for col in ["page", "shares_after", "combined_after", "shares_before", "combined_before"]:
         df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
-    for col in ["pct_after", "pct_before", "delta_pct", "confidence"]:
+    for col in ["pct_after", "pct_before", "confidence"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    for col in ["is_highlighted_change", "has_numeric_change"]:
-        df[col] = df[col].fillna(False).astype(bool)
 
     n_rows = len(df)
-    pct_bad = int(((df["pct_after"].notna()) & ((df["pct_after"] < 0) | (df["pct_after"] > 100))).sum()) if n_rows else 0
-    pct_bad2 = int(((df["pct_before"].notna()) & ((df["pct_before"] < 0) | (df["pct_before"] > 100))).sum()) if n_rows else 0
+    pct_bad = int(((df["pct_after"].notna()) & ((df["pct_after"] < 0) | (df["pct_after"] > 100))).sum())
+    pct_bad2 = int(((df["pct_before"].notna()) & ((df["pct_before"] < 0) | (df["pct_before"] > 100))).sum())
     print(f"[summary] extracted rows: {n_rows}")
     print(f"[summary] pct_after out-of-range: {pct_bad} | pct_before out-of-range: {pct_bad2}")
 
-    changes = df[(df["is_highlighted_change"]) | (df["has_numeric_change"])].copy() if n_rows else pd.DataFrame(columns=df.columns)
-    warnings = df[df["parse_warnings"].fillna("").astype(str).str.len() > 0].copy() if n_rows else pd.DataFrame(columns=df.columns)
-    raw_debug = pd.DataFrame(raw_debug_all)
-    return df, changes, warnings, raw_debug
-
-
-def manifest_downloads_frame(manifest_path: str | Path | None, pdf_path: Path) -> pd.DataFrame:
-    if manifest_path:
-        path = Path(manifest_path)
-        if path.exists():
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(data, list):
-                    return pd.DataFrame(data)
-            except json.JSONDecodeError:
-                pass
-    return pd.DataFrame(
-        [
-            {
-                "attachment_filename": pdf_path.name,
-                "local_pdf_path": str(pdf_path),
-                "download_status": "local",
-            }
-        ]
-    )
-
-
-def write_workbook(
-    out_path: Path,
-    ownership_all: pd.DataFrame,
-    ownership_changes: pd.DataFrame,
-    downloads: pd.DataFrame,
-    parse_warnings: pd.DataFrame,
-    raw_debug: pd.DataFrame | None = None,
-) -> None:
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(out_path, engine="openpyxl") as xw:
-        ownership_changes.to_excel(xw, index=False, sheet_name="ownership_changes")
-        ownership_all.to_excel(xw, index=False, sheet_name="ownership_all")
-        downloads.to_excel(xw, index=False, sheet_name="downloads")
-        parse_warnings.to_excel(xw, index=False, sheet_name="parse_warnings")
-        if raw_debug is not None and not raw_debug.empty:
-            raw_debug.to_excel(xw, index=False, sheet_name="raw_rows_debug")
+        df.to_excel(xw, index=False, sheet_name="ownership_table")
+        if raw_debug_all:
+            pd.DataFrame(raw_debug_all).to_excel(xw, index=False, sheet_name="raw_rows_debug")
 
-
-def main() -> None:
-    args = build_argparser().parse_args()
-    pdf_path = Path(args.pdf)
-    out_path = Path(args.out)
-    debug_dir = Path(args.debug_dir) if args.debug_dir else None
-
-    ownership_all, ownership_changes, parse_warnings, raw_debug = extract_pdf_to_frames(
-        pdf_path,
-        manifest_path=args.manifest,
-        debug_dir=debug_dir,
-        include_raw_debug=args.include_raw_debug,
-        max_pages=args.max_pages,
-        page_from=args.page_from,
-        page_to=args.page_to,
-    )
-
-    downloads = manifest_downloads_frame(args.manifest, pdf_path)
-    write_workbook(
-        out_path,
-        ownership_all,
-        ownership_changes,
-        downloads,
-        parse_warnings,
-        raw_debug=raw_debug if args.include_raw_debug else None,
-    )
     print(f"[done] wrote: {out_path}")
 
 
